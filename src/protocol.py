@@ -95,16 +95,20 @@ def recv_exact(sock, n: int) -> bytes:
 
 
 def send_frame(sock, body: bytes):
-    """Envia um quadro com prefixo de 1 byte de comprimento (0..255)."""
-    if len(body) > 255:
+    total = len(body) + 1
+    if total > 255:
         raise ValueError("quadro demasiado grande (> 255 bytes)")
-    sock.sendall(bytes([len(body)]) + body)
+    sock.sendall(bytes([total]) + body)
 
 
 def recv_frame(sock) -> bytes:
-    """Lê o prefixo de 1 byte de comprimento e depois o corpo do quadro."""
-    n = recv_exact(sock, 1)[0]
-    return recv_exact(sock, n)
+    total = recv_exact(sock, 1)[0]
+    if total < 2:
+        raise ProtocolError("comprimento inválido")
+    body = recv_exact(sock, total - 1)
+    if SC_SIZE.get(body[0]) != total:
+        raise ProtocolError("tipo desconhecido ou comprimento incompatível")
+    return body
 
 
 # ---------- SubControl: tipos e construção ----------
@@ -114,6 +118,8 @@ SC_HELLO_ACK = 2      # tipo(1B) | data_port(2B)
 SC_SUBSCRIBE = 3      # tipo(1B) | qos(1B) | filtro(48B)
 SC_UNSUBSCRIBE = 4    # tipo(1B) | filtro(48B)
 SC_ACK = 5            # tipo(1B)
+
+SC_SIZE = {SC_HELLO: 21, SC_HELLO_ACK: 4, SC_SUBSCRIBE: 51, SC_UNSUBSCRIBE: 50, SC_ACK: 2}
 
 ROLE_PUBLISHER = 1
 ROLE_SUBSCRIBER = 2
@@ -127,12 +133,32 @@ def sc_hello_ack(data_port: int) -> bytes:
     return bytes([SC_HELLO_ACK]) + data_port.to_bytes(2, "big")
 
 
+def encode_filter(filt: str) -> bytes:
+    parts = filt.split("/")
+    if parts[-1] == "*":
+        parts = parts[:-1]
+    if not 1 <= len(parts) <= 3:
+        raise ValueError(f"filtro inválido: {filt}")
+    parts += [""] * (3 - len(parts))
+    return b"".join(encode_fixed(p, 16) for p in parts)
+
+
+def decode_filter(raw: bytes) -> str:
+    if len(raw) != 48:
+        raise ProtocolError("filtro com tamanho inválido")
+    levels = [decode_fixed(raw[i:i + 16]) for i in (0, 16, 32)]
+    filled = [p for p in levels if p]
+    if not filled or levels[:len(filled)] != filled:
+        raise ProtocolError("filtro inválido")
+    return "/".join(filled) + ("/*" if len(filled) < 3 else "")
+
+
 def sc_subscribe(filt: str, qos: int) -> bytes:
-    return bytes([SC_SUBSCRIBE, qos]) + encode_fixed(filt, 48)
+    return bytes([SC_SUBSCRIBE, qos]) + encode_filter(filt)
 
 
 def sc_unsubscribe(filt: str) -> bytes:
-    return bytes([SC_UNSUBSCRIBE]) + encode_fixed(filt, 48)
+    return bytes([SC_UNSUBSCRIBE]) + encode_filter(filt)
 
 
 def request(sock, body: bytes):
@@ -186,4 +212,6 @@ def ec_decode(data: bytes):
     topic = decode_topic(r.take(48))
     tam_payload = r.u16()
     payload = r.take(tam_payload)
+    if r.pos != len(data):
+        raise ProtocolError("bytes a mais")
     return kind, qos, pub_id, fluxo, seq, topic, payload

@@ -3,7 +3,7 @@ Filtros: tópico completo, ou prefixo terminado em /* (north/* ou north/station7
 
 
 def _level_ok(level):
-    return bool(level) and "*" not in level
+    return bool(level) and "*" not in level and len(level.encode("utf-8")) <= 16
 
 
 def valid_topic(topic):

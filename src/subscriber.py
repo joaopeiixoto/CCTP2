@@ -14,6 +14,8 @@ class Subscriber:
     def __init__(self, ident, cfg):
         self.started = time.monotonic()        # 'at' conta a partir do arranque do processo
         self.ident = ident
+        if not 0 < len(ident.encode("utf-8")) <= 16:
+            raise ConfigError("--id tem de ter 1 a 16 bytes")
         self.log = RunLog(one(cfg, "log"), ident)
         self.host, self.port = parse_addr(one(cfg, "broker_control"))
         self.duration = float(one(cfg, "duration"))

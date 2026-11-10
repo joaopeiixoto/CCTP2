@@ -14,6 +14,8 @@ from topics import valid_topic
 class Publisher:
     def __init__(self, ident, cfg):
         self.ident = ident
+        if not 0 < len(ident.encode("utf-8")) <= 16:
+            raise ConfigError("--id tem de ter 1 a 16 bytes")
         self.log = RunLog(one(cfg, "log"), ident)
         self.host, self.port = parse_addr(one(cfg, "broker_control"))
         self.start_after = float(one(cfg, "start_after"))
