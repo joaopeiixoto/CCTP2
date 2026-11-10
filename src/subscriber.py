@@ -73,7 +73,7 @@ class Subscriber:
 
     def _on_deliver(self, data):
         try:
-            kind, qos, msg_id, topic, _ = ec_decode(data)
+            kind, qos, pub_id, fluxo, seq, topic, _ = ec_decode(data)
         except ProtocolError:
             return
         if kind != EC_DELIVER:
@@ -81,6 +81,7 @@ class Subscriber:
         # Datagramas que chegam depois de um cancelamento são ignorados.
         if not any(matches(f, topic) for f in self.active):
             return
+        msg_id = f"{pub_id}-{fluxo}-{seq}"
         if qos == 2:
             key = (topic, msg_id)
             if key in self.seen:

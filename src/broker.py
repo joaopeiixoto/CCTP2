@@ -9,7 +9,7 @@ from config import one
 from protocol import (
     EC_DELIVER, EC_PUBLISH, ROLE_PUBLISHER, ROLE_SUBSCRIBER,
     SC_ACK, SC_HELLO, SC_HELLO_ACK, SC_SUBSCRIBE, SC_UNSUBSCRIBE,
-    ProtocolError, Reader, ec_decode, ec_encode, recv_frame, send_frame,
+    ProtocolError, Reader, decode_fixed, ec_decode, ec_encode, recv_frame, send_frame,
 )
 from topics import matches, valid_filter
 
@@ -31,6 +31,7 @@ class Broker:
         self.control_port = int(one(cfg, "control_port"))
         self.data_port = int(one(cfg, "data_port"))
         self.duration = float(one(cfg, "duration"))
+        self.evict_after = float(one(cfg, "evict_after"))
 
         self.lock = threading.Lock()
         self.sessions = {}            # socket TCP -> Session
@@ -71,7 +72,7 @@ class Broker:
                 if mtype == SC_HELLO:
                     role = r.u8()
                     udp_port = r.u16()
-                    ident = r.text()
+                    ident = decode_fixed(r.take(16))
                     if role not in (ROLE_PUBLISHER, ROLE_SUBSCRIBER):
                         raise ProtocolError("papel desconhecido")
                     session = Session(conn, role, ident, (conn.getpeername()[0], udp_port))
@@ -85,13 +86,13 @@ class Broker:
 
                 if mtype == SC_SUBSCRIBE:
                     qos = r.u8()
-                    filt = r.text()
+                    filt = decode_fixed(r.take(48))
                     if qos not in (1, 2) or not valid_filter(filt):
                         raise ProtocolError("subscrição inválida")
                     with self.lock:
                         session.filters[filt] = qos
                 elif mtype == SC_UNSUBSCRIBE:
-                    filt = r.text()
+                    filt = decode_fixed(r.take(48))
                     with self.lock:
                         session.filters.pop(filt, None)
                 else:
@@ -109,7 +110,7 @@ class Broker:
 
     def _route(self, data):
         try:
-            kind, qos, msg_id, topic, payload = ec_decode(data)
+            kind, qos, pub_id, fluxo, seq, topic, payload = ec_decode(data)
         except ProtocolError:
             return                                  # cabeçalho inválido: descarta
         if kind != EC_PUBLISH or qos not in (1, 2):
@@ -126,5 +127,5 @@ class Broker:
             # Uma cópia por subscritor, mesmo com filtros sobrepostos.
             # Qos da entrega: o mais forte dos filtros, sem passar do qos do fluxo.
             deliver_qos = min(qos, max(matching))
-            self.udp.sendto(ec_encode(EC_DELIVER, deliver_qos, msg_id, topic, payload),
+            self.udp.sendto(ec_encode(EC_DELIVER, deliver_qos, pub_id, fluxo, seq, topic, payload),
                             session.udp_addr)

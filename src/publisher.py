@@ -49,7 +49,8 @@ class Publisher:
         for n in range(count):
             msg_id = f"{self.ident}-{idx}-{n}"
             payload = f"{random.uniform(0, 100):.2f}".encode()
-            self.udp.sendto(ec_encode(EC_PUBLISH, qos, msg_id, topic, payload), self.data_addr)
+            pkt = ec_encode(EC_PUBLISH, qos, self.ident, idx, n, topic, payload)
+            self.udp.sendto(pkt, self.data_addr)
             self.log.write(topic, msg_id)
             next_at += interval
             time.sleep(max(0.0, next_at - time.monotonic()))
