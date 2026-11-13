@@ -137,18 +137,17 @@ def recv_exact(sock, n: int) -> bytes:
 
 
 def send_frame(sock, body: bytes):
-    total = len(body) + 1
-    if total > 255:
+    if len(body) > 255:
         raise ValueError("quadro demasiado grande (> 255 bytes)")
-    sock.sendall(bytes([total]) + body)
+    sock.sendall(bytes([len(body)]) + body)
 
 
 def recv_frame(sock) -> bytes:
-    total = recv_exact(sock, 1)[0]
-    if total < 2:
+    n = recv_exact(sock, 1)[0]
+    if n < 1:
         raise ProtocolError("comprimento inválido")
-    body = recv_exact(sock, total - 1)
-    if SC_SIZE.get(body[0]) != total:
+    body = recv_exact(sock, n)
+    if SC_SIZE.get(body[0]) != n:
         raise ProtocolError("tipo desconhecido ou comprimento incompatível")
     return body
 
@@ -161,7 +160,7 @@ SC_SUBSCRIBE = 3      # tipo(1B) | qos(1B) | filtro(48B: regiao, estacao, metric
 SC_UNSUBSCRIBE = 4    # tipo(1B) | filtro(48B: regiao, estacao, metrica)
 SC_ACK = 5            # tipo(1B)
 
-SC_SIZE = {SC_HELLO: 21, SC_HELLO_ACK: 4, SC_SUBSCRIBE: 51, SC_UNSUBSCRIBE: 50, SC_ACK: 2}
+SC_SIZE = {SC_HELLO: 20, SC_HELLO_ACK: 3, SC_SUBSCRIBE: 50, SC_UNSUBSCRIBE: 49, SC_ACK: 1}
 
 ROLE_PUBLISHER = 1
 ROLE_SUBSCRIBER = 2
@@ -174,26 +173,6 @@ def sc_hello(role: int, udp_port: int, ident: str) -> bytes:
 
 def sc_hello_ack(data_port: int) -> bytes:
     return bytes([SC_HELLO_ACK]) + data_port.to_bytes(2, "big")
-
-
-def encode_filter(filt: str) -> bytes:
-    parts = filt.split("/")
-    if parts[-1] == "*":
-        parts = parts[:-1]
-    if not 1 <= len(parts) <= 3:
-        raise ValueError(f"filtro inválido: {filt}")
-    parts += [""] * (3 - len(parts))
-    return b"".join(encode_fixed(p, 16) for p in parts)
-
-
-def decode_filter(raw: bytes) -> str:
-    if len(raw) != 48:
-        raise ProtocolError("filtro com tamanho inválido")
-    levels = [decode_fixed(raw[i:i + 16]) for i in (0, 16, 32)]
-    filled = [p for p in levels if p]
-    if not filled or levels[:len(filled)] != filled:
-        raise ProtocolError("filtro inválido")
-    return "/".join(filled) + ("/*" if len(filled) < 3 else "")
 
 
 def sc_subscribe(filt: str, qos: int) -> bytes:

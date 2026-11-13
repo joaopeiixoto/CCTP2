@@ -86,13 +86,13 @@ class Broker:
 
                 if mtype == SC_SUBSCRIBE:
                     qos = r.u8()
-                    filt = decode_filter(r.take(48))
+                    filt = decode_filter(r.take(FILTER_LEN))
                     if qos not in (1, 2) or not valid_filter(filt):
                         raise ProtocolError("subscrição inválida")
                     with self.lock:
                         session.filters[filt] = qos
                 elif mtype == SC_UNSUBSCRIBE:
-                    filt = decode_filter(r.take(48))
+                    filt = decode_filter(r.take(FILTER_LEN))
                     with self.lock:
                         session.filters.pop(filt, None)
                 else:
