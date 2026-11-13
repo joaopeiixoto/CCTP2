@@ -39,7 +39,7 @@ Todos os inteiros são *big-endian*. As strings são UTF-8 preenchidas à direit
 `role`: 1 = publicador, 2 = subscritor.
 
 * **Campos fixos em vez de prefixos internos:** o parse fica uma sequência de leituras de tamanho conhecido e a verificação de limites reduz-se a uma só (secção 10).
-* **`filtro` com 48 bytes e sem barras:** usa a mesma representação do tópico no EventCast (três campos contíguos de 16 bytes: `regiao(16) estacao(16) metrica(16)`), substituindo o nível universal por `*` (ex.: `north/*` viaja como `north`, `*`, `""`). Elimina a necessidade de enviar ou fazer parse de barras na rede, tornando a descodificação direta e unificando o formato dos dois protocolos em 48 bytes.
+* **`filtro` com 48 bytes e sem barras:** usa a mesma representação do tópico no EventCast (três campos contíguos de 16 bytes: `regiao(16) estacao(16) metrica(16)`), em que um nível universal é representado por um campo vazio preenchido com `0x00` (ex.: `north/*` viaja com `regiao="north"` e `estacao`/`metrica` a `0x00`). Elimina a necessidade de enviar ou fazer parse de barras na rede, tornando a descodificação direta e unificando o formato dos dois protocolos em 48 bytes.
 * **Um único `ACK` genérico:** cada pedido do cliente (`HELLO` exceto, que tem `HELLO_ACK`) recebe `ACK` antes do seguinte, por isso o `ACK` não precisa de identificar o pedido. O cliente espera-o em modo pedido/resposta (`request`).
 * **O SubControl não tem mensagem de erro nem de terminação.** Perante um pedido inválido o broker fecha a ligação sem resposta. O fim normal de um cliente é fechar o TCP, e o broker trata o fim de ligação como fim de sessão, retirando-a do estado. Evita mensagens que o enunciado não exige e deixa o TCP sinalizar o fim.
 

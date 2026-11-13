@@ -53,17 +53,19 @@ def decode_topic(raw: bytes) -> str:
 
 
 def encode_filter(filt: str) -> bytes:
-    """Codifica um filtro em 48 bytes sem barras: regiao(16B) + estacao(16B) + metrica(16B) com '*'."""
+    """Codifica um filtro em 48 bytes sem barras: regiao(16B) + estacao(16B) + metrica(16B).
+    Níveis universais ('*') são representados por campos vazios (0x00).
+    """
     if filt.endswith("/*"):
         prefix = filt[:-2].split("/")
         if len(prefix) == 1:
             return (encode_fixed(prefix[0], 16) +
-                    encode_fixed("*", 16) +
+                    encode_fixed("", 16) +
                     encode_fixed("", 16))
         elif len(prefix) == 2:
             return (encode_fixed(prefix[0], 16) +
                     encode_fixed(prefix[1], 16) +
-                    encode_fixed("*", 16))
+                    encode_fixed("", 16))
         else:
             raise ValueError(f"filtro inválido: {filt}")
     parts = filt.split("/")
@@ -75,7 +77,7 @@ def encode_filter(filt: str) -> bytes:
 
 
 def decode_filter(raw: bytes) -> str:
-    """Descodifica 48 bytes no formato canónico do filtro (com '*' se aplicável)."""
+    """Descodifica 48 bytes no formato canónico do filtro."""
     if len(raw) != 48:
         raise ProtocolError("filtro com tamanho inválido (esperado 48 bytes)")
     reg = decode_fixed(raw[:16])
@@ -83,14 +85,10 @@ def decode_filter(raw: bytes) -> str:
     met = decode_fixed(raw[32:48])
     if not reg:
         raise ProtocolError("filtro com região vazia")
-    if est == "*":
+    if est == "" or est == "*":
         return f"{reg}/*"
-    if met == "*":
-        if not est:
-            raise ProtocolError("filtro com estação vazia antes de '*'")
+    if met == "" or met == "*":
         return f"{reg}/{est}/*"
-    if not est or not met:
-        raise ProtocolError("filtro incompleto")
     return f"{reg}/{est}/{met}"
 
 
