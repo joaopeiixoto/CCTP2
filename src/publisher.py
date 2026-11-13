@@ -25,8 +25,10 @@ class Publisher:
         for topic, opts in many(cfg, "publish"):
             if not valid_topic(topic):
                 raise ConfigError(f"tópico inválido: {topic}")
-            self.flows.append((topic, qos_of(opts),
-                               int(opt(opts, "count")), float(opt(opts, "rate"))))
+            count, rate = int(opt(opts, "count")), float(opt(opts, "rate"))
+            if not (0 <= count <= 2**32) or rate <= 0:
+                raise ConfigError(f"count/rate inválidos: {topic}")
+            self.flows.append((topic, qos_of(opts), count, rate))
 
     def run(self):
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -52,7 +54,7 @@ class Publisher:
             msg_id = f"{self.ident}-{idx}-{n}"
             payload = f"{random.uniform(0, 100):.2f}".encode()
             pkt = ec_encode(EC_PUBLISH, qos, self.ident, idx, n, topic, payload)
-            self.udp.sendto(pkt, self.data_addr)
             self.log.write(topic, msg_id)
+            self.udp.sendto(pkt, self.data_addr)
             next_at += interval
             time.sleep(max(0.0, next_at - time.monotonic()))

@@ -17,6 +17,10 @@ def main(argv=None):
     parser.add_argument("--config", required=True)
     args = parser.parse_args(argv)
 
+    if not args.id or len(args.id.encode()) > 16 or any(c.isspace() for c in args.id):
+        print("erro: --id tem de ter 1 a 16 bytes e não ter espaços", file=sys.stderr)
+        return 2
+
     try:
         cfg = parse_config(args.config)
         node = ROLES[args.role](args.id, cfg)

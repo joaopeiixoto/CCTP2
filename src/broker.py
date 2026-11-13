@@ -7,7 +7,7 @@ import time
 
 from config import one
 from protocol import (
-    EC_DELIVER, EC_PUBLISH, ROLE_PUBLISHER, ROLE_SUBSCRIBER,
+    EC_DELIVER, EC_PUBLISH, FILTER_LEN, ROLE_PUBLISHER, ROLE_SUBSCRIBER,
     SC_ACK, SC_HELLO, SC_HELLO_ACK, SC_SUBSCRIBE, SC_UNSUBSCRIBE,
     ProtocolError, Reader, decode_fixed, decode_filter, ec_decode, ec_encode, recv_frame, send_frame,
 )
