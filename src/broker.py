@@ -7,9 +7,9 @@ import time
 
 from config import one
 from protocol import (
-    EC_DELIVER, EC_PUBLISH, ROLE_PUBLISHER, ROLE_SUBSCRIBER,
+    EC_DELIVER, EC_PUBLISH, FILTER_LEN, ROLE_PUBLISHER, ROLE_SUBSCRIBER,
     SC_ACK, SC_HELLO, SC_HELLO_ACK, SC_SUBSCRIBE, SC_UNSUBSCRIBE,
-    ProtocolError, Reader, decode_fixed, ec_decode, ec_encode, recv_frame, send_frame,
+    ProtocolError, Reader, decode_filter, decode_fixed, ec_decode, ec_encode, recv_frame, send_frame,
 )
 from topics import matches, valid_filter
 
@@ -86,13 +86,13 @@ class Broker:
 
                 if mtype == SC_SUBSCRIBE:
                     qos = r.u8()
-                    filt = decode_fixed(r.take(48))
+                    filt = decode_filter(r.take(FILTER_LEN))
                     if qos not in (1, 2) or not valid_filter(filt):
                         raise ProtocolError("subscrição inválida")
                     with self.lock:
                         session.filters[filt] = qos
                 elif mtype == SC_UNSUBSCRIBE:
-                    filt = decode_fixed(r.take(48))
+                    filt = decode_filter(r.take(FILTER_LEN))
                     with self.lock:
                         session.filters.pop(filt, None)
                 else:

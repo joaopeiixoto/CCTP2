@@ -52,6 +52,48 @@ def decode_topic(raw: bytes) -> str:
     return f"{reg}/{est}/{met}"
 
 
+def encode_filter(filt: str) -> bytes:
+    """Codifica um filtro em 48 bytes sem barras: regiao(16B) + estacao(16B) + metrica(16B) com '*'."""
+    if filt.endswith("/*"):
+        prefix = filt[:-2].split("/")
+        if len(prefix) == 1:
+            return (encode_fixed(prefix[0], 16) +
+                    encode_fixed("*", 16) +
+                    encode_fixed("", 16))
+        elif len(prefix) == 2:
+            return (encode_fixed(prefix[0], 16) +
+                    encode_fixed(prefix[1], 16) +
+                    encode_fixed("*", 16))
+        else:
+            raise ValueError(f"filtro inválido: {filt}")
+    parts = filt.split("/")
+    if len(parts) != 3:
+        raise ValueError(f"filtro inválido: {filt}")
+    return (encode_fixed(parts[0], 16) +
+            encode_fixed(parts[1], 16) +
+            encode_fixed(parts[2], 16))
+
+
+def decode_filter(raw: bytes) -> str:
+    """Descodifica 48 bytes no formato canónico do filtro (com '*' se aplicável)."""
+    if len(raw) != 48:
+        raise ProtocolError("filtro com tamanho inválido (esperado 48 bytes)")
+    reg = decode_fixed(raw[:16])
+    est = decode_fixed(raw[16:32])
+    met = decode_fixed(raw[32:48])
+    if not reg:
+        raise ProtocolError("filtro com região vazia")
+    if est == "*":
+        return f"{reg}/*"
+    if met == "*":
+        if not est:
+            raise ProtocolError("filtro com estação vazia antes de '*'")
+        return f"{reg}/{est}/*"
+    if not est or not met:
+        raise ProtocolError("filtro incompleto")
+    return f"{reg}/{est}/{met}"
+
+
 class Reader:
     """Lê campos com verificação de limites: um cabeçalho truncado vira ProtocolError."""
 
@@ -111,12 +153,13 @@ def recv_frame(sock) -> bytes:
 
 SC_HELLO = 1          # tipo(1B) | role(1B) | udp_port(2B) | id(16B)
 SC_HELLO_ACK = 2      # tipo(1B) | data_port(2B)
-SC_SUBSCRIBE = 3      # tipo(1B) | qos(1B) | filtro(48B)
-SC_UNSUBSCRIBE = 4    # tipo(1B) | filtro(48B)
+SC_SUBSCRIBE = 3      # tipo(1B) | qos(1B) | filtro(48B: regiao, estacao, metrica)
+SC_UNSUBSCRIBE = 4    # tipo(1B) | filtro(48B: regiao, estacao, metrica)
 SC_ACK = 5            # tipo(1B)
 
 ROLE_PUBLISHER = 1
 ROLE_SUBSCRIBER = 2
+FILTER_LEN = 48
 
 
 def sc_hello(role: int, udp_port: int, ident: str) -> bytes:
@@ -128,11 +171,11 @@ def sc_hello_ack(data_port: int) -> bytes:
 
 
 def sc_subscribe(filt: str, qos: int) -> bytes:
-    return bytes([SC_SUBSCRIBE, qos]) + encode_fixed(filt, 48)
+    return bytes([SC_SUBSCRIBE, qos]) + encode_filter(filt)
 
 
 def sc_unsubscribe(filt: str) -> bytes:
-    return bytes([SC_UNSUBSCRIBE]) + encode_fixed(filt, 48)
+    return bytes([SC_UNSUBSCRIBE]) + encode_filter(filt)
 
 
 def request(sock, body: bytes):
