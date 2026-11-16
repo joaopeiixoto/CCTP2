@@ -3,6 +3,7 @@ import argparse
 import sys
 
 from config import parse_config
+from protocol import ProtocolError
 from broker import Broker
 from publisher import Publisher
 from subscriber import Subscriber
@@ -28,7 +29,11 @@ def main(argv=None):
         print(f"erro: {e}", file=sys.stderr)
         return 2
 
-    node.run()
+    try:
+        node.run()
+    except (OSError, ProtocolError) as e:   # ConnectionError e timeouts herdam de OSError
+        print(f"erro: {e}", file=sys.stderr)
+        return 1
     return 0
 
 

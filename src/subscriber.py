@@ -51,18 +51,21 @@ class Subscriber:
         end = self.started + self.duration
         self.udp.settimeout(0.05)
 
-        while time.monotonic() < end:
-            now = time.monotonic()
-            while pending and self.started + pending[0][0] <= now:
-                self._do_action(pending.pop(0))
-            try:
-                data, _ = self.udp.recvfrom(65535)
-            except socket.timeout:
-                continue
-            self._on_deliver(data)
-
-        self.tcp.close()
-        self.log.close()
+        try:
+            while time.monotonic() < end:
+                now = time.monotonic()
+                while pending and self.started + pending[0][0] <= now:
+                    self._do_action(pending.pop(0))
+                try:
+                    data, _ = self.udp.recvfrom(65535)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    continue
+                self._on_deliver(data)
+        finally:
+            self.tcp.close()
+            self.log.close()
 
     def _do_action(self, action):
         _, kind, filt, qos = action

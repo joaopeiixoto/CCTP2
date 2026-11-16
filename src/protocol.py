@@ -8,6 +8,7 @@ EventCast (UDP), cada datagrama:
     kind(1B) | qos(1B) | pub_id(16B) | fluxo(2B) | seq(4B) | topico(48B) | tam_payload(2B) | payload
 """
 import socket
+import time
 
 
 class ProtocolError(Exception):
@@ -189,9 +190,25 @@ def request(sock, body: bytes):
         raise ProtocolError("resposta inesperada (esperava SC_ACK)")
 
 
+CONNECT_RETRY_S = 10.0     # os três papéis arrancam em simultâneo: o broker pode ainda não escutar
+CONNECT_STEP_S = 0.1
+
+
+def connect_with_retry(host: str, port: int):
+    """Liga ao broker, repetindo enquanto a ligação for recusada ou o destino inalcançável."""
+    deadline = time.monotonic() + CONNECT_RETRY_S
+    while True:
+        try:
+            return socket.create_connection((host, port), timeout=10)
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(CONNECT_STEP_S)
+
+
 def open_session(host: str, port: int, role: int, ident: str, udp_port: int):
     """Abre a sessão SubControl e devolve (socket TCP, endereço do plano de dados)."""
-    sock = socket.create_connection((host, port), timeout=10)
+    sock = connect_with_retry(host, port)
     send_frame(sock, sc_hello(role, udp_port, ident))
     r = Reader(recv_frame(sock))
     if r.u8() != SC_HELLO_ACK:

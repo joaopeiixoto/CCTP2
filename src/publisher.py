@@ -34,18 +34,20 @@ class Publisher:
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.tcp, self.data_addr = open_session(self.host, self.port,
                                                 ROLE_PUBLISHER, self.ident, 0)
-        time.sleep(self.start_after)   # os subscritores estabelecem a sessão em paralelo
+        try:
+            time.sleep(self.start_after)   # os subscritores estabelecem a sessão em paralelo
 
-        threads = [threading.Thread(target=self._flow, args=(i, *f))
-                   for i, f in enumerate(self.flows)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+            threads = [threading.Thread(target=self._flow, args=(i, *f))
+                       for i, f in enumerate(self.flows)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
-        # Fase 1: sem confirmações, não há nada a esperar.
-        self.tcp.close()
-        self.log.close()
+            # Fase 1: sem confirmações, não há nada a esperar.
+        finally:
+            self.tcp.close()
+            self.log.close()
 
     def _flow(self, idx, topic, qos, count, rate):
         interval = 1.0 / rate
@@ -55,6 +57,9 @@ class Publisher:
             payload = f"{random.uniform(0, 100):.2f}".encode()
             pkt = ec_encode(EC_PUBLISH, qos, self.ident, idx, n, topic, payload)
             self.log.write(topic, msg_id)
-            self.udp.sendto(pkt, self.data_addr)
+            try:
+                self.udp.sendto(pkt, self.data_addr)
+            except OSError:
+                pass                                # ex.: rede ainda a convergir; fica como perdida
             next_at += interval
             time.sleep(max(0.0, next_at - time.monotonic()))

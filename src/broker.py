@@ -53,13 +53,19 @@ class Broker:
                 data, _ = self.udp.recvfrom(65535)
             except socket.timeout:
                 continue
+            except OSError:
+                continue
             self._route(data)
 
     # ----- plano de controlo (TCP) -----
 
     def _accept_loop(self):
         while True:
-            conn, _ = self.tcp.accept()
+            try:
+                conn, _ = self.tcp.accept()
+            except OSError:
+                time.sleep(0.05)                    # ex.: descritores esgotados; não matar o accept
+                continue
             threading.Thread(target=self._serve_client, args=(conn,), daemon=True).start()
 
     def _serve_client(self, conn):
@@ -127,5 +133,8 @@ class Broker:
             # Uma cópia por subscritor, mesmo com filtros sobrepostos.
             # Qos da entrega: o mais forte dos filtros, sem passar do qos do fluxo.
             deliver_qos = min(qos, max(matching))
-            self.udp.sendto(ec_encode(EC_DELIVER, deliver_qos, pub_id, fluxo, seq, topic, payload),
-                            session.udp_addr)
+            try:
+                self.udp.sendto(ec_encode(EC_DELIVER, deliver_qos, pub_id, fluxo, seq, topic, payload),
+                                session.udp_addr)
+            except OSError:
+                continue                            # destino inalcançável: um datagrama perdido, não um broker caído
