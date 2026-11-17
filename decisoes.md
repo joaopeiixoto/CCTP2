@@ -165,8 +165,3 @@ Implementado em `reliability.py` (`SendWindow`) e usado nas duas ligações: pub
 * **Broker:** uma thread aceita ligações TCP; uma thread por cliente trata o SubControl; a thread principal recebe os datagramas UDP; uma thread de temporizadores retransmite e expulsa. Todo o estado é protegido por um único `Lock`. Os envios UDP são feitos com o lock, para que nenhuma thread envie, depois de um cancelamento ou de uma expulsão, um datagrama que tenha preparado antes (um `sendto` UDP não bloqueia na prática).
 * **Publicador:** uma thread por fluxo `publish`, cada uma com o seu ritmo, e uma thread de I/O que recebe os ACKs e retransmite. A janela é protegida por uma `Condition`, que também acorda os fluxos à espera de lugar. O registo tem o seu `Lock`.
 * **Subscritor:** um único ciclo com `select` sobre o UDP e o TCP (timeout de 50 ms) que executa as ações `at` quando chegam ao seu instante. Não há threads; uma ação bloqueia a receção durante o seu `ACK` (no máximo 5 s).
-
-## 15. Ainda não implementado
-
-* **Fase 3:** fan-out para vários subscritores, independência e seletividade já existem e foram testados com dois subscritores. Falta decidir a deduplicação de qos=2 no broker (secção 10) e testar com os seis subscritores.
-* **Fase 4:** `role` de broker no `HELLO`, ligação aos `peer` (a chave já é lida e validada, mas ainda não é usada), mensagens de subscrição entre brokers e encaminhamento. O `hop_seq` já é o identificador por salto de que a fase 4 precisa.

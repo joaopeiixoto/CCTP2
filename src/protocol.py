@@ -1,4 +1,4 @@
-"""Codificação dos dois protocolos, byte a byte (sem bibliotecas de serialização).
+"""Codificação dos dois protocolos, byte a byte.
 Todos os inteiros são big-endian. Os textos são UTF-8 em campos de tamanho fixo,
 preenchidos com 0x00 à direita.
 
@@ -81,8 +81,8 @@ def decode_topic(raw: bytes) -> str:
 
 
 def encode_filter(filt: str) -> bytes:
-    """Filtro -> 48 bytes. Cada '*' (só pode estar no fim) vira campos vazios:
-    'north/*' -> north | 0x00*16 | 0x00*16;  'north/station7/*' -> north | station7 | 0x00*16."""
+    #Filtro -> 48 bytes. Cada '*' só pode estar no fim e fica campos vazios:
+    #'north/*' -> north | 0x00*16 | 0x00*16;  'north/station7/*' -> north | station7 | 0x00*16.
     parts = filt.split("/")
     if parts[-1] == "*":
         parts = parts[:-1]
@@ -93,8 +93,8 @@ def encode_filter(filt: str) -> bytes:
 
 
 def decode_filter(raw: bytes) -> str:
-    """48 bytes -> filtro canónico. Depois de um campo vazio, os seguintes também têm de
-    estar vazios: 'north | 0x00 | temperature' (o '*' no meio) é rejeitado."""
+    #48 bytes -> filtro canónico. Depois de um campo vazio, os seguintes também têm de
+    #estar vazios: 'north | 0x00 | temperature' (o '*' no meio) é rejeitado.
     if len(raw) != FILTER_LEN:
         raise ProtocolError("filtro com tamanho inválido")
     reg, est, met = _levels(raw)
@@ -112,7 +112,7 @@ def decode_filter(raw: bytes) -> str:
 
 
 class Reader:
-    """Lê campos com verificação de limites: um cabeçalho truncado vira ProtocolError."""
+    #Lê campos com verificação de limites. se vier um cabeçalho truncado fica ProtocolError.
 
     def __init__(self, data: bytes):
         self.data = data
@@ -288,8 +288,7 @@ def message_id(pub_id: str, fluxo: int, seq: int) -> str:
     return f"{pub_id}-{fluxo}-{seq}"
 
 
-def ec_encode(kind: int, qos: int, hop_seq: int, pub_id: str, fluxo: int, seq: int,
-              topic: str, payload: bytes) -> bytes:
+def ec_encode(kind: int, qos: int, hop_seq: int, pub_id: str, fluxo: int, seq: int, topic: str, payload: bytes) -> bytes:
     """PUBLISH ou DELIVER: 78 bytes de cabeçalho + payload."""
     if len(payload) > MAX_PAYLOAD:
         raise ValueError(f"payload com mais de {MAX_PAYLOAD} bytes")
