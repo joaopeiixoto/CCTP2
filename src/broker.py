@@ -1,40 +1,63 @@
-"""Broker, fase 1: um broker, SubControl em TCP, EventCast em UDP.
-Pontos de extensão: fase 2 (eviction, fiabilidade por subscritor),
-fase 3 (G2 e fan-out com estado por subscritor), fase 4 (peers)."""
+"""Broker (um só broker, fases 1-2): SubControl em TCP, EventCast em UDP.
+
+Threads:
+  * accept   — aceita ligações TCP; uma thread por cliente trata o SubControl;
+  * principal — recebe datagramas: PUBLISH (confirma e distribui) e ACK de subscritores;
+  * timer    — a cada TIMER_TICK retransmite pendentes expirados e expulsa subscritores.
+Todo o estado partilhado é protegido por self.lock. Os envios UDP também são feitos com o
+lock: assim, depois de um UNSUBSCRIBE ou de uma expulsão, nenhuma thread envia um datagrama
+que tenha preparado antes (o sendto UDP não bloqueia na prática).
+"""
 import socket
 import threading
 import time
+from collections import deque
 
-from config import one
+from config import many, number, one, parse_addr, port
 from protocol import (
-    EC_DELIVER, EC_PUBLISH, FILTER_LEN, ROLE_PUBLISHER, ROLE_SUBSCRIBER,
-    SC_ACK, SC_HELLO, SC_HELLO_ACK, SC_SUBSCRIBE, SC_UNSUBSCRIBE,
-    ProtocolError, Reader, decode_fixed, decode_filter, ec_decode, ec_encode, recv_frame, send_frame,
+    EC_DELIVER, EC_PUBLISH, ROLE_PUBLISHER, ROLE_SUBSCRIBER,
+    FILTER_LEN, ID_LEN, SC_HELLO, SC_SUBSCRIBE, SC_UNSUBSCRIBE, Ack, Data, ProtocolError,
+    Reader, decode_filter, decode_fixed, ec_ack, ec_decode, ec_encode, recv_frame, sc_ack,
+    sc_hello_ack, send_frame,
 )
-from topics import matches, valid_filter
+from reliability import SendWindow
+from topics import covered, matches, valid_filter
+
+TIMER_TICK = 0.02     # s — retransmissão e expulsão verificadas a cada 20 ms
 
 
 class Session:
-    """Estado de um cliente ligado por SubControl."""
+    #Estado de um cliente ligado por SubControl.
 
-    def __init__(self, sock, role, ident, udp_addr):
+    def __init__(self, sock, role, ident, udp_addr, now):
         self.sock = sock
         self.role = role
         self.ident = ident
-        self.udp_addr = udp_addr      # (ip do TCP, porta de dados do cliente)
+        self.udp_addr = udp_addr      # (ip da ligação TCP, porta UDP anunciada no HELLO)
+        self.alive = True
+        # Só para subscritores:
         self.filters = {}             # filtro -> qos
+        self.window = SendWindow()    # DELIVER enviados e por confirmar (hop_seq próprio)
+        self.queue = deque()          # entregas à espera de lugar na janela
+        self.last_ack = now           # instante do último ACK recebido
+        self.pending_since = None     # desde quando há algo por entregar (None: nada)
+
+    def has_pending(self):
+        return bool(self.queue) or len(self.window) > 0
 
 
 class Broker:
     def __init__(self, _ident, cfg):
         bind = one(cfg, "bind")
-        self.control_port = int(one(cfg, "control_port"))
-        self.data_port = int(one(cfg, "data_port"))
-        self.duration = float(one(cfg, "duration"))
-        self.evict_after = float(one(cfg, "evict_after"))
+        self.control_port = port(one(cfg, "control_port"), "control_port")
+        self.data_port = port(one(cfg, "data_port"), "data_port")
+        self.duration = number(one(cfg, "duration"), "duration")
+        self.evict_after = number(one(cfg, "evict_after"), "evict_after")
+        self.peers = [parse_addr(p) for p, _ in many(cfg, "peer")]   # fase 4: ainda não usados
 
         self.lock = threading.Lock()
         self.sessions = {}            # socket TCP -> Session
+        self.by_addr = {}             # endereço UDP do cliente -> Session
 
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.bind((bind, self.data_port))
@@ -45,19 +68,18 @@ class Broker:
         self.tcp.listen(64)
 
     def run(self):
-        threading.Thread(target=self._accept_loop, daemon=True).start()
-        self.udp.settimeout(0.2)
         deadline = time.monotonic() + self.duration
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+        threading.Thread(target=self._timer_loop, daemon=True).start()
+        self.udp.settimeout(0.2)
         while time.monotonic() < deadline:
             try:
-                data, _ = self.udp.recvfrom(65535)
-            except socket.timeout:
+                data, addr = self.udp.recvfrom(65535)
+            except OSError:          # inclui socket.timeout
                 continue
-            except OSError:
-                continue
-            self._route(data)
+            self._on_datagram(data, addr)
 
-    # ----- plano de controlo (TCP) -----
+    # TCP
 
     def _accept_loop(self):
         while True:
@@ -76,65 +98,148 @@ class Broker:
                 mtype = r.u8()
 
                 if mtype == SC_HELLO:
-                    role = r.u8()
-                    udp_port = r.u16()
-                    ident = decode_fixed(r.take(16))
-                    if role not in (ROLE_PUBLISHER, ROLE_SUBSCRIBER):
-                        raise ProtocolError("papel desconhecido")
-                    session = Session(conn, role, ident, (conn.getpeername()[0], udp_port))
+                    if session is not None:
+                        raise ProtocolError("HELLO repetido")
+                    role, udp_port, ident = r.u8(), r.u16(), decode_fixed(r.take(ID_LEN))
+                    r.end()
+                    if role not in (ROLE_PUBLISHER, ROLE_SUBSCRIBER) or udp_port == 0 or not ident:
+                        raise ProtocolError("HELLO inválido")
+                    addr = (conn.getpeername()[0], udp_port)
+                    session = Session(conn, role, ident, addr, time.monotonic())
                     with self.lock:
                         self.sessions[conn] = session
-                    send_frame(conn, bytes([SC_HELLO_ACK]) + self.data_port.to_bytes(2, "big"))
+                        self.by_addr[addr] = session
+                    # Responde antes de qualquer datagrama: só depois deste HELLO_ACK o cliente
+                    # conhece a porta de dados.
+                    send_frame(conn, sc_hello_ack(self.data_port))
                     continue
 
-                if session is None:
-                    raise ProtocolError("HELLO em falta")
+                if session is None or session.role != ROLE_SUBSCRIBER:
+                    raise ProtocolError("pedido fora de sessão ou de papel errado")
 
                 if mtype == SC_SUBSCRIBE:
-                    qos = r.u8()
-                    filt = decode_filter(r.take(FILTER_LEN))
+                    qos, filt = r.u8(), decode_filter(r.take(FILTER_LEN))
+                    r.end()
                     if qos not in (1, 2) or not valid_filter(filt):
                         raise ProtocolError("subscrição inválida")
                     with self.lock:
                         session.filters[filt] = qos
                 elif mtype == SC_UNSUBSCRIBE:
                     filt = decode_filter(r.take(FILTER_LEN))
+                    r.end()
                     with self.lock:
                         session.filters.pop(filt, None)
+                        self._purge_uncovered(session, time.monotonic())
                 else:
-                    raise ProtocolError("tipo desconhecido")
+                    raise ProtocolError("tipo inesperado vindo de um cliente")
 
-                send_frame(conn, bytes([SC_ACK]))
+                send_frame(conn, sc_ack())
         except (OSError, ProtocolError, ValueError):
-            pass   # sessão caída ou mensagem inválida: fecha
+            pass   # sessão terminada pelo cliente, expulsa, ou mensagem inválida: fecha
         finally:
             with self.lock:
-                self.sessions.pop(conn, None)
+                self._forget(conn)
             conn.close()
 
-    # ----- plano de dados (UDP) -----
+    def _forget(self, conn):
+        #Retira a sessão do estado e descarta o que tinha em fila. Idempotente; com lock.
+        session = self.sessions.pop(conn, None)
+        if session is None:
+            return None
+        session.alive = False
+        if self.by_addr.get(session.udp_addr) is session:
+            del self.by_addr[session.udp_addr]
+        session.queue.clear()
+        session.window.clear()
+        return session
 
-    def _route(self, data):
+    def _purge_uncovered(self, session, now):
+        #Após um cancelamento, nada do que já não corresponde a um filtro volta a sair:
+        #nem o que está em fila, nem retransmissões do que estava em trânsito.
+        keep = lambda topic: covered(session.filters, topic)
+        session.queue = deque(item for item in session.queue if keep(item[-2]))
+        session.window.discard(lambda topic: not keep(topic))
+        if not session.has_pending():
+            session.pending_since = None
+
+    # plano de dados (UDP) 
+
+    def _on_datagram(self, data, addr):
         try:
-            kind, qos, pub_id, fluxo, seq, topic, payload = ec_decode(data)
+            msg = ec_decode(data)
         except ProtocolError:
-            return                                  # cabeçalho inválido: descarta
-        if kind != EC_PUBLISH or qos not in (1, 2):
-            return
-
+            return # inválido ou truncado é descartado
+        out = []
+        now = time.monotonic()
         with self.lock:
-            snapshot = [(s, dict(s.filters)) for s in self.sessions.values()
-                        if s.role == ROLE_SUBSCRIBER]
+            session = self.by_addr.get(addr)
+            if session is None:
+                return        # sem sessão SubControl: ignora
+            if isinstance(msg, Data) and msg.kind == EC_PUBLISH and session.role == ROLE_PUBLISHER:
+                # Em G1 não se deduplica- uma retransmissão do publicador é distribuída outra vez.
+                out.append((ec_ack(msg.hop_seq), addr))
+                self._fan_out(msg, now, out)
+            elif isinstance(msg, Ack) and session.role == ROLE_SUBSCRIBER:
+                session.last_ack = now
+                session.window.ack(msg.hop_seq)
+                self._fill_window(session, now, out)
+            self._send_all(out)
 
-        for session, filters in snapshot:
-            matching = [q for f, q in filters.items() if matches(f, topic)]
+    def _fan_out(self, msg, now, out):
+        for s in self.by_addr.values():
+            if s.role != ROLE_SUBSCRIBER:
+                continue
+            matching = [q for f, q in s.filters.items() if matches(f, msg.topic)]
             if not matching:
                 continue
             # Uma cópia por subscritor, mesmo com filtros sobrepostos.
-            # Qos da entrega: o mais forte dos filtros, sem passar do qos do fluxo.
-            deliver_qos = min(qos, max(matching))
+            qos = min(msg.qos, max(matching))
+            if not s.has_pending():
+                s.pending_since = now
+            s.queue.append((qos, msg.pub_id, msg.fluxo, msg.seq, msg.topic, msg.payload))
+            self._fill_window(s, now, out)
+
+    def _fill_window(self, s, now, out):
+        #Passa entregas da fila para a janela enquanto houver lugar
+        while s.queue and s.window.has_room():
+            qos, pub_id, fluxo, seq, topic, payload = s.queue.popleft()
+            pkt = s.window.add(
+                lambda hop: ec_encode(EC_DELIVER, qos, hop, pub_id, fluxo, seq, topic, payload),
+                now, tag=topic)
+            out.append((pkt, s.udp_addr))
+        if not s.has_pending():
+            s.pending_since = None
+
+    # ----- temporizadores: retransmissão e expulsão -----
+
+    def _timer_loop(self):
+        while True:
+            time.sleep(TIMER_TICK)
+            out, evicted = [], []
+            now = time.monotonic()
+            with self.lock:
+                for conn, s in list(self.sessions.items()):
+                    if s.role != ROLE_SUBSCRIBER or not s.has_pending():
+                        continue
+                    # evict_after conta desde o último ACK ou desde que passou a haver
+                    # algo por entregar, o que for mais recente.
+                    silent_since = max(s.last_ack, s.pending_since)
+                    if now - silent_since >= self.evict_after:
+                        self._forget(conn)       # descarta fila e pendentes: nada mais sai
+                        evicted.append(conn)
+                        continue
+                    out.extend((pkt, s.udp_addr) for pkt in s.window.expired(now))
+                self._send_all(out)
+            for conn in evicted:
+                # Fecha a sessão TCP (FIN). A thread do cliente acorda do recv e fecha o socket.
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def _send_all(self, out):
+        for pkt, addr in out:
             try:
-                self.udp.sendto(ec_encode(EC_DELIVER, deliver_qos, pub_id, fluxo, seq, topic, payload),
-                                session.udp_addr)
+                self.udp.sendto(pkt, addr)
             except OSError:
-                continue                            # destino inalcançável: um datagrama perdido, não um broker caído
+                pass        # destino inalcançável: conta como perda; o temporizador trata

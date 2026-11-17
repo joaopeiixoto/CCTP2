@@ -18,6 +18,7 @@ def main(argv=None):
     parser.add_argument("--config", required=True)
     args = parser.parse_args(argv)
 
+    # O id vai para o registo (campos separados por espaços) e para o HELLO (campo de 16 bytes).
     if not args.id or len(args.id.encode()) > 16 or any(c.isspace() for c in args.id):
         print("erro: --id tem de ter 1 a 16 bytes e não ter espaços", file=sys.stderr)
         return 2

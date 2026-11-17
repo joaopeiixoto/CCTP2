@@ -7,7 +7,7 @@ class ConfigError(ValueError):
 
 
 def parse_config(path):
-    """Devolve {chave: [(termo, {opções}), ...]} pela ordem do ficheiro."""
+    #Devolve {chave: [(termo, {opções}), ...]} pela ordem do ficheiro.
     entries = {}
     with open(path, encoding="utf-8") as f:
         for lineno, raw in enumerate(f, 1):
@@ -49,13 +49,39 @@ def opt(opts, name):
     return opts[name]
 
 
+def number(text, what, minimum=0.0):
+    """Número de segundos (ou ritmo) não negativo."""
+    try:
+        v = float(text)
+    except ValueError:
+        raise ConfigError(f"{what}: não é um número: {text}")
+    if v < minimum:
+        raise ConfigError(f"{what}: tem de ser >= {minimum}")
+    return v
+
+
 def qos_of(opts):
-    q = int(opt(opts, "qos"))
-    if q not in (1, 2):
+    q = opt(opts, "qos")
+    if q not in ("1", "2"):
         raise ConfigError("qos tem de ser 1 ou 2")
-    return q
+    return int(q)
+
+
+def port(text, what):
+    try:
+        p = int(text)
+    except ValueError:
+        raise ConfigError(f"{what}: porta inválida: {text}")
+    if not 1 <= p <= 65535:
+        raise ConfigError(f"{what}: porta fora de 1..65535")
+    return p
 
 
 def parse_addr(s):
-    host, port = s.rsplit(":", 1)
-    return host, int(port)
+    """'a.b.c.d:porta' -> (host, porta). Endereços IPv4, sem resolução de nomes."""
+    if ":" not in s:
+        raise ConfigError(f"endereço sem porta: {s}")
+    host, p = s.rsplit(":", 1)
+    if not host:
+        raise ConfigError(f"endereço sem host: {s}")
+    return host, port(p, s)

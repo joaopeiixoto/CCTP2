@@ -1,51 +1,78 @@
-"""Publicador: gera publicações sintéticas nos fluxos da configuração.
-Fase 2: aqui passa a esperar por ACKs até 'drain' (retransmissão)."""
+"""Publicador: gera publicações sintéticas nos fluxos da configuração e garante que
+chegam ao broker (selective repeat sobre UDP). Termina 'drain' segundos após a última
+publicação, ou antes, se tudo estiver confirmado."""
 import random
 import socket
 import threading
 import time
 
-from config import one, many, opt, qos_of, parse_addr, ConfigError
-from protocol import EC_PUBLISH, ROLE_PUBLISHER, ec_encode, open_session
+from config import ConfigError, many, number, one, opt, parse_addr, qos_of
+from protocol import (EC_PUBLISH, ROLE_PUBLISHER, Ack, ProtocolError, SEQ_MOD,
+                      ec_decode, ec_encode, message_id, open_session)
+from reliability import SendWindow
 from runlog import RunLog
 from topics import valid_topic
+
+IO_TICK = 0.02      # s — período máximo entre verificações de temporizadores
 
 
 class Publisher:
     def __init__(self, ident, cfg):
         self.ident = ident
-        if not 0 < len(ident.encode("utf-8")) <= 16:
-            raise ConfigError("--id tem de ter 1 a 16 bytes")
-        self.log = RunLog(one(cfg, "log"), ident)
         self.host, self.port = parse_addr(one(cfg, "broker_control"))
-        self.start_after = float(one(cfg, "start_after"))
-        self.drain = float(one(cfg, "drain"))
+        self.start_after = number(one(cfg, "start_after"), "start_after")
+        self.drain = number(one(cfg, "drain"), "drain")
 
         self.flows = []   # (tópico, qos, count, rate)
         for topic, opts in many(cfg, "publish"):
             if not valid_topic(topic):
                 raise ConfigError(f"tópico inválido: {topic}")
-            count, rate = int(opt(opts, "count")), float(opt(opts, "rate"))
-            if not (0 <= count <= 2**32) or rate <= 0:
+            try:
+                count = int(opt(opts, "count"))
+            except ValueError:
+                raise ConfigError(f"count inválido: {topic}")
+            rate = number(opt(opts, "rate"), "rate")
+            if not 0 <= count <= SEQ_MOD or rate <= 0:
                 raise ConfigError(f"count/rate inválidos: {topic}")
             self.flows.append((topic, qos_of(opts), count, rate))
+        if len(self.flows) > 0x10000:
+            raise ConfigError("mais fluxos do que cabem no campo fluxo (uint16)")
+
+        self.log = RunLog(one(cfg, "log"), ident)
+
+        self.window = SendWindow()
+        self.cond = threading.Condition()     # protege a janela; acorda quem espera por espaço
+        self.stop = threading.Event()
+
+        # Socket UDP aberto antes do HELLO: a porta vai no HELLO e é para lá que vêm os ACKs.
+        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp.bind(("", 0))
+        self.udp_port = self.udp.getsockname()[1]
 
     def run(self):
-        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.tcp, self.data_addr = open_session(self.host, self.port,
-                                                ROLE_PUBLISHER, self.ident, 0)
+        self.tcp, self.data_addr = open_session(self.host, self.port, ROLE_PUBLISHER,
+                                                self.ident, self.udp_port)
+        io = threading.Thread(target=self._io_loop, daemon=True)
         try:
+            io.start()
             time.sleep(self.start_after)   # os subscritores estabelecem a sessão em paralelo
 
-            threads = [threading.Thread(target=self._flow, args=(i, *f))
+            threads = [threading.Thread(target=self._flow, args=(i, *f), daemon=True)
                        for i, f in enumerate(self.flows)]
             for t in threads:
                 t.start()
             for t in threads:
                 t.join()
 
-            # Fase 1: sem confirmações, não há nada a esperar.
+            # drain: continuar a retransmitir até tudo confirmado, no máximo 'drain' segundos.
+            deadline = time.monotonic() + self.drain
+            with self.cond:
+                while len(self.window) and time.monotonic() < deadline:
+                    self.cond.wait(min(IO_TICK, max(0.0, deadline - time.monotonic())))
         finally:
+            self.stop.set()
+            if io.is_alive():
+                io.join(timeout=1.0)
             self.tcp.close()
             self.log.close()
 
@@ -53,13 +80,46 @@ class Publisher:
         interval = 1.0 / rate
         next_at = time.monotonic()
         for n in range(count):
-            msg_id = f"{self.ident}-{idx}-{n}"
             payload = f"{random.uniform(0, 100):.2f}".encode()
-            pkt = ec_encode(EC_PUBLISH, qos, self.ident, idx, n, topic, payload)
-            self.log.write(topic, msg_id)
-            try:
-                self.udp.sendto(pkt, self.data_addr)
-            except OSError:
-                pass                                # ex.: rede ainda a convergir; fica como perdida
-            next_at += interval
+            with self.cond:
+                while not self.window.has_room():          # janela cheia: espera por ACKs
+                    self.cond.wait(IO_TICK)
+                pkt = self.window.add(
+                    lambda hop: ec_encode(EC_PUBLISH, qos, hop, self.ident, idx, n, topic, payload),
+                    time.monotonic())
+            # A linha de registo é escrita uma vez, na primeira transmissão, antes do envio.
+            self.log.write(topic, message_id(self.ident, idx, n))
+            self._send(pkt)
+            # Ritmo: um atraso (janela cheia) não é compensado com uma rajada.
+            next_at = max(next_at + interval, time.monotonic())
             time.sleep(max(0.0, next_at - time.monotonic()))
+
+    def _io_loop(self):
+        """Recebe ACKs e retransmite o que expirou."""
+        self.udp.settimeout(IO_TICK)
+        while not self.stop.is_set():
+            try:
+                data, addr = self.udp.recvfrom(65535)
+            except socket.timeout:
+                data = None
+            except OSError:
+                data = None
+            if data is not None and addr == self.data_addr:
+                try:
+                    msg = ec_decode(data)
+                except ProtocolError:
+                    msg = None                      # datagrama inválido: descarta
+                if isinstance(msg, Ack):
+                    with self.cond:
+                        if self.window.ack(msg.hop_seq):
+                            self.cond.notify_all()
+            with self.cond:
+                due = self.window.expired(time.monotonic())
+            for pkt in due:
+                self._send(pkt)
+
+    def _send(self, pkt):
+        try:
+            self.udp.sendto(pkt, self.data_addr)
+        except OSError:
+            pass          # ex.: rede ainda a convergir; o temporizador trata como perda
