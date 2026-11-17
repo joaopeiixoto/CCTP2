@@ -1,6 +1,4 @@
-"""Publicador: gera publicações sintéticas nos fluxos da configuração e garante que
-chegam ao broker (selective repeat sobre UDP). Termina 'drain' segundos após a última
-publicação, ou antes, se tudo estiver confirmado."""
+
 import random
 import socket
 import threading

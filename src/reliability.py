@@ -1,21 +1,4 @@
-"""Lado emissor da fiabilidade sobre UDP: selective repeat com janela deslizante,
-uma janela por ligação (publicador→broker; broker→cada subscritor).
 
-Cada transmissão recebe o próximo hop_seq da ligação e fica pendente com o seu próprio
-temporizador. A janela é o intervalo [base, base + WINDOW), em que base é o hop_seq
-mais antigo ainda por confirmar: só se envia um hop_seq novo se couber nesse intervalo.
-Um ACK retira exatamente o hop_seq que confirma; se era o da base, a janela desliza até
-ao pendente seguinte. Quando um temporizador expira retransmite-se só esse datagrama,
-com o mesmo hop_seq (não os que vinham a seguir, como no go-back-N), e o seu RTO duplica
-até RTO_MAX.
-
-O recetor não reordena nem descarta duplicados (a ordem não é garantida e G1 regista
-o que chega): confirma cada datagrama individualmente. Por isso não precisa de janela
-própria; a do emissor basta, e WINDOW << 2^31 garante que dois pendentes nunca têm o
-mesmo hop_seq quando o contador dá a volta.
-
-A classe não é thread-safe: quem a usa segura o seu próprio lock.
-"""
 SEQ_MOD = 2 ** 32
 
 RTO_INIT = 0.2      # s — primeiro prazo de retransmissão; RTT no CORE é da ordem de 1 ms
@@ -46,16 +29,15 @@ class SendWindow:
 
     @property
     def base(self):
-        """hop_seq mais antigo por confirmar (ou next_seq, se não há nenhum)."""
+        #hop_seq mais antigo por confirmar (ou next_seq, se não há nenhum)
         return next(iter(self.pending), self.next_seq)
 
     def has_room(self):
-        """O próximo hop_seq cabe em [base, base + size)? Contas módulo 2^32."""
+        #O próximo hop_seq cabe em [base, base + size)?
         return (self.next_seq - self.base) % SEQ_MOD < self.size
 
     def add(self, build, now, tag=None):
-        """Atribui o próximo hop_seq, constrói o datagrama com build(hop_seq) e guarda-o
-        como pendente. Devolve o datagrama, pronto a enviar."""
+        #Atribui o próximo hop_seq, constrói o datagrama com build(hop_seq) e guarda-o como pendente e devolve o datagrama, pronto a enviar.
         hop = self.next_seq
         self.next_seq = (hop + 1) % SEQ_MOD
         pkt = build(hop)
@@ -68,7 +50,7 @@ class SendWindow:
         return self.pending.pop(hop_seq, None) is not None
 
     def expired(self, now):
-        """Datagramas cujo temporizador expirou, já com o novo prazo (backoff)."""
+        #Datagramas cujo temporizador expirou, já com o novo prazo, que é o backoff
         out = []
         for p in self.pending.values():
             if p.deadline <= now:
@@ -78,7 +60,7 @@ class SendWindow:
         return out
 
     def discard(self, predicate):
-        """Esquece os pendentes cuja tag satisfaz predicate (ex.: subscrição cancelada)."""
+        #Esquece os pendentes cuja tag satisfaz predicate, por exemplo subscrição cancelada
         for hop in [h for h, p in self.pending.items() if predicate(p.tag)]:
             del self.pending[hop]
 

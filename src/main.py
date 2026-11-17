@@ -1,4 +1,3 @@
-"""Ponto de entrada: ./run.sh <papel> --id <id> --config <ficheiro>"""
 import argparse
 import sys
 

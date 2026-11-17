@@ -1,6 +1,3 @@
-"""Subscritor: subscreve no arranque e nas ações 'at'; confirma cada DELIVER e escreve
-uma linha de registo por entrega. Em G1 regista tudo o que chega (duplicados incluídos);
-em G2 consulta a tabela de duplicados."""
 import select
 import socket
 import time

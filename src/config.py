@@ -1,6 +1,3 @@
-"""Configuração: 'chave = termo [opção=valor ...]'. '#' inicia comentário.
-Não há valores por omissão: quem usa uma chave pede-a explicitamente."""
-
 
 class ConfigError(ValueError):
     pass

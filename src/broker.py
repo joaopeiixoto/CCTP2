@@ -1,13 +1,4 @@
-"""Broker (um só broker, fases 1-2): SubControl em TCP, EventCast em UDP.
 
-Threads:
-  * accept   — aceita ligações TCP; uma thread por cliente trata o SubControl;
-  * principal — recebe datagramas: PUBLISH (confirma e distribui) e ACK de subscritores;
-  * timer    — a cada TIMER_TICK retransmite pendentes expirados e expulsa subscritores.
-Todo o estado partilhado é protegido por self.lock. Os envios UDP também são feitos com o
-lock: assim, depois de um UNSUBSCRIBE ou de uma expulsão, nenhuma thread envia um datagrama
-que tenha preparado antes (o sendto UDP não bloqueia na prática).
-"""
 import socket
 import threading
 import time
